@@ -15,6 +15,36 @@ For pwn debugging, the default path is:
 
 Do not use a single heredoc-driven GDB session for interactive programs. Do not let GDB commands and inferior input share stdin. Do not make exploit changes after a crash until the crash site has been inspected in GDB.
 
+## tmux: append-only during the solve, cleanup only at the end
+
+The user shares this tmux server and may have their own sessions, windows, and panes with
+live work. Two rules:
+
+1. **Never touch tmux state you did not create.** The user's pre-existing sessions/windows/
+   panes stay untouched at all times — do not kill, resize, rename, or send keys to them.
+2. **During the solve, do not kill what is running normally.** While work is in progress only
+   add (create/reuse) sessions, windows, and panes; do not `kill-session`/`kill-window`/
+   `kill-pane` or `exit`/`Ctrl-D` a pane that is mid-use, and do not tear the debugger down to
+   "clean up" — restart `gdb` inside the same pane instead.
+
+**Cleanup at the very end is fine.** Once the task is fully done, you may remove the
+sessions/panes *this skill created* (e.g. `tmux kill-session -t pwn`) to tidy up — just never
+remove the user's pre-existing tmux state. Don't do this mid-solve.
+
+Practical:
+
+- Create a dedicated, uniquely named session and reuse it idempotently every step:
+  ```bash
+  tmux has-session -t pwn 2>/dev/null || tmux new-session -d -s pwn -x 200 -y 50
+  ```
+  Do not pick a name that might collide with the user's sessions; if `pwn` is already theirs,
+  use `pwn-<challenge>`. List with `tmux ls` to see what exists, but do not modify anything you
+  did not create. Track which sessions/panes you made so end-of-task cleanup only removes yours.
+- Add panes/windows with `tmux split-window`/`new-window` when you need more; do not remove
+  them mid-solve.
+- To restart the debugger, send `quit` to GDB and relaunch `gdb` **inside the same pane** —
+  do not kill the pane or session to get a fresh debugger.
+
 ## Transport: a persistent tmux-CLI GDB session first, batch only for verification
 
 The valuable thing is a **persistent, adaptive GDB session** — set a breakpoint, look, decide
@@ -25,7 +55,7 @@ hypothesis you already have.
 1. **Persistent GDB via direct `tmux` CLI from Bash** — the default. No MCP server, no extra
    dependency; the session stays alive across the whole solve and each step is one Bash call.
    ```bash
-   tmux new-session -d -s dbg -x 200 -y 50
+   tmux has-session -t dbg 2>/dev/null || tmux new-session -d -s dbg -x 200 -y 50  # reuse; don't kill mid-solve
    tmux set-option -t dbg history-limit 100000              # keep full scrollback
    tmux send-keys -t dbg 'gdb -q -p PID' Enter ; sleep 1.2  # WAIT for the prompt first
    # each step = one Bash call: send, settle, read

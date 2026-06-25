@@ -2,6 +2,16 @@
 
 Follow this order unless the user asks for a narrow debugging task.
 
+Steps 1, 2, and the vulnerability hunt are read-only and independent — parallelize them with
+subagents when the runtime supports them (e.g. Claude Code's `Agent`/`Task` tool; skip on
+runtimes without subagents). Fan out one batch of read-only subagents — protections/files,
+libc identification + offset table, reverse engineering by area, vulnerability triage, gadget/
+ORW inventory — and have each return a compact findings summary (named functions, exact
+offsets, ranked candidate bugs as `func:offset`), not raw dumps. Consolidate into the
+solve-state file, then do the dynamic proof (step 4) serially in the main thread. See the
+"Parallel Recon and Triage (subagents)" section of `SKILL.md` for the full job list and the
+serial/parallel boundary.
+
 ## 1. File and Runtime Inventory
 
 Identify every supplied file:
@@ -67,6 +77,13 @@ This lets GDB reproduce a state exactly instead of manually retyping a long sequ
 ## 4. Dynamic Proof
 
 Drive a persistent GDB through a `tmux` CLI session as the first-choice proof path (`tmux send-keys` to issue commands, `tmux capture-pane -p -S -` to read output). Create or reuse separate `work`, `gdb`, and `inferior-tty` panes, set `inferior-tty` inside GDB, and feed the program through the inferior pane. This is mandatory for first-pass live debugging; reserve batch GDB for verifying a known target.
+
+This proof is **serial and single-threaded**: one persistent tmux/GDB session against one
+inferior. Do not hand it to parallel subagents or run multiple inferiors that race the same
+state. During the solve, tmux is **append-only** — reuse a dedicated named session, never
+`kill-session`/`kill-pane`/`exit` a pane that is running normally, and never touch the user's
+pre-existing tmux; you may tidy up the sessions/panes you created only after the task is fully
+done (see `tmux-debugging.md`).
 
 Use tmux/GDB to prove the bug:
 

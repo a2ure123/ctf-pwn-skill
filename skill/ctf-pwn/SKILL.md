@@ -30,6 +30,7 @@ Read these reference files when the topic is relevant:
 - If the user provides an IDA path, IDB path, or IDA MCP connection, use IDA for first-pass reverse engineering before objdump-style static disassembly. `objdump` is only for quick sanity checks, symbol/protection inventory, or when IDA is unavailable. Use dynamic GDB verification for every important reverse-engineering assumption.
 - Build small pwntools wrappers for the challenge interface before exploitation. Heap/menu challenges should have `add`, `edit`, `show`, `delete/free`, and `choice` helpers when those actions exist.
 - Use a persistent GDB driven via direct `tmux` CLI (`send-keys` / `capture-pane -p -S -`) as the interface for interactive debugging whenever live debugging is needed. Keep normal shell, GDB, and inferior stdin/stdout separate.
+- tmux is **append-only during the solve**: while work is in progress only create or reuse sessions/windows/panes — do not `kill-session`/`kill-server`/`kill-window`/`kill-pane`, `exit`/`Ctrl-D`/`Ctrl-C` a pane that is running normally, and never touch tmux state you did not create. The user shares this tmux server and may have their own sessions and live work; those stay untouched at all times. Create a dedicated, uniquely named session (e.g. `pwn`), reuse it idempotently (`tmux has-session -t pwn 2>/dev/null || tmux new-session -d -s pwn ...`), and to get a clean debugger restart `gdb` *inside* the pane rather than killing it mid-run. **Cleanup is allowed only at the very end, after the task is fully done, and only for the sessions/panes this skill created** — tidy those up if you want, never the user's pre-existing ones.
 - Do not drive GDB with large one-shot heredoc scripts when the inferior needs stdin. Prefer `set inferior-tty /dev/pts/N`; use `gdb.attach` only after the tmux/GDB state has already proved the primitive or when inferior-tty is impractical.
 - After a crash, EOF, wrong leak, allocator abort, unstable shell, or heap-layout-dependent failure, attach GDB or stop in tmux/GDB and inspect the exact memory state before changing the exploit. For heap challenges, build the next step from the current chunks, bins, pointer arrays, safe-linking values, and mapped target addresses observed in memory.
 - Choose exploitation techniques by evidence: glibc version, available leaks, write primitive, allocation/free limits, size restrictions, RELRO, PIE, NX, canary, seccomp, and whether hooks exist.
@@ -47,6 +48,50 @@ Read these reference files when the topic is relevant:
 8. Implement only the next tested step in `exp.py`: leak, base calculation, primitive strengthening, control-flow hijack, ORW, or shell.
 9. Re-run under GDB at the dangerous instruction/allocator operation and inspect memory.
 10. Repeat until the exploit succeeds locally with the matched libc, then adapt remote host/port.
+
+Parallelize the read-only parts of steps 1, 3, and 6 (inventory, reverse engineering,
+vulnerability hunting) with subagents when the runtime supports them — see below. Keep the
+GDB proof (step 5/9) and the exploit iteration serial.
+
+## Parallel Recon and Triage (subagents)
+
+The information-gathering and vulnerability-confirmation phases (steps 1, 3, 6) are mostly
+independent, read-only investigation, so they parallelize well. When the runtime supports
+spawning subagents (e.g. Claude Code's `Agent`/`Task` tool — skip this if your runtime has no
+subagents, such as plain Codex), fan out several read-only subagents up front to collect
+findings concurrently, then consolidate before debugging. This cuts wall-clock on the slow
+recon/RE phase. Launch independent subagents in one batch so they run at once.
+
+Good parallel subagent jobs (read-only, no shared mutable state):
+
+- **Protections & files**: `file`/`checksec`/`readelf`/`seccomp-tools` inventory; return a
+  one-paragraph protection summary (arch, PIE, RELRO, NX, canary, seccomp, symbols).
+- **libc identification**: version from `strings`, the matching loader, and an offset table
+  (`system`, `/bin/sh`, `one_gadget`, and `__free_hook`/IO/`setcontext` symbols if present).
+- **Reverse engineering**: one subagent per major area — menu dispatch + global arrays; each
+  input path's destination buffer / max length / signedness / NUL handling; the
+  alloc/edit/show/free lifecycle and count/size limits. Ask for named functions, structs, and
+  exact offsets, not raw decompiler dumps.
+- **Vulnerability triage**: scan every input/array/index path for overflow, OOB, UAF, double
+  free, off-by-one/null, format string, and integer issues; return a ranked candidate list
+  with `func:offset` and the reason each is suspected.
+- **Gadgets/ORW**: `ROPgadget`/`one_gadget`/pwndbg `rop` inventory for the relevant base.
+- **Protocol/crypto**: identify packet formats and algorithms (see `technique-index.md`) and
+  return encode/decode helpers.
+
+Keep these in the main thread — do NOT parallelize:
+
+- **The dynamic proof in GDB.** Live debugging is stateful and runs through ONE persistent
+  tmux/GDB session against ONE inferior. Multiple agents must not drive the same tmux session
+  or race a shared binary/heap state. Subagents enumerate candidate bugs statically; the main
+  agent confirms each one in the single persistent GDB session (and respects the append-only
+  tmux rule).
+- **Exploit writing and the iteration loop** (one tested step at a time).
+
+Give each subagent the exact files/paths and ask for a compact findings summary (offsets,
+addresses, candidate bugs with `func:offset`, viable routes) so you keep the conclusions, not
+file dumps. Record the consolidated result in the solve-state file, then proceed to the
+serial GDB proof.
 
 ## Heap Challenge Protocol
 
@@ -143,7 +188,8 @@ Bash call. Reserve one-shot/**batch GDB** (`gdb -batch -p PID -ex ...`, or `... 
 BIN`) for verifying a known target, not for exploration.
 
 ```bash
-tmux new-session -d -s pwn -x 200 -y 50
+# reuse the session if it exists; don't kill it mid-solve (cleanup only at the very end)
+tmux has-session -t pwn 2>/dev/null || tmux new-session -d -s pwn -x 200 -y 50
 tmux set-option -t pwn history-limit 100000        # keep full scrollback
 # pane 0 = inferior TTY: run `tty` there, note the /dev/pts/N it prints
 # pane 1 = gdb:  gdb -q "$BIN"   then configure:
@@ -155,8 +201,11 @@ tmux capture-pane -p -t pwn -S -
 ```
 
 Send program input to the inferior pane, GDB commands to the GDB pane; wait for the prompt
-before `send-keys` (poll the pane, don't fixed-sleep). Full command templates, the step loop,
-the batch/gate alternative, and a stripped-libc `main_arena` note are in
+before `send-keys` (poll the pane, don't fixed-sleep). Don't tear the session down mid-solve
+(no `kill-session`/`kill-pane` on a running pane); when you need a fresh GDB, send `quit` then
+relaunch `gdb` in the same pane. You may remove the sessions/panes you created once the task
+is finished — never the user's pre-existing ones. Full command templates, the step loop, the
+batch/gate alternative, and a stripped-libc `main_arena` note are in
 `references/tmux-debugging.md` — read it before any substantial live debugging session.
 
 ## Pwndbg Commands
