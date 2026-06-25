@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# CTF local artifacts
+core
+core.*
+*.core
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.i64
+*.idb
+*.pyc
+
+# Exploit runtime files
+flag
+flag.txt
+exp.py
+payload.bin
+leak.bin
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
