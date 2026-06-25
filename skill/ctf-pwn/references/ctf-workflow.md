@@ -66,7 +66,7 @@ This lets GDB reproduce a state exactly instead of manually retyping a long sequ
 
 ## 4. Dynamic Proof
 
-Use tmux-mcp/GDB as the first-choice proof path. Create or reuse separate `work`, `gdb`, and `inferior-tty` panes, set `inferior-tty` inside GDB, and feed the program through the inferior pane. This is mandatory for first-pass live debugging unless tmux-mcp is unavailable.
+Drive a persistent GDB through a `tmux` CLI session as the first-choice proof path (`tmux send-keys` to issue commands, `tmux capture-pane -p -S -` to read output). Create or reuse separate `work`, `gdb`, and `inferior-tty` panes, set `inferior-tty` inside GDB, and feed the program through the inferior pane. This is mandatory for first-pass live debugging; reserve batch GDB for verifying a known target.
 
 Use tmux/GDB to prove the bug:
 

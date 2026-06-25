@@ -1,20 +1,20 @@
 ---
 name: ctf-pwn
-description: CTF pwn solving workflow for Codex with tmux-mcp-first live debugging: protection checks, libc/loader matching, IDA or idalib reverse engineering, pwntools wrappers, mandatory tmux-GDB-pwndbg inferior-tty step debugging, heap/stack/libc state inspection, and exploit strategy selection by primitive, glibc version, and challenge limits.
+description: CTF pwn solving workflow for Codex with tmux-CLI-driven persistent-GDB live debugging: protection checks, libc/loader matching, IDA or idalib reverse engineering, pwntools wrappers, mandatory GDB-pwndbg inferior-tty step debugging, heap/stack/libc state inspection, and exploit strategy selection by primitive, glibc version, and challenge limits.
 ---
 
 # CTF Pwn
 
 This skill follows the portable `SKILL.md` convention and runs unchanged under Codex (`~/.codex/skills/ctf-pwn`), Claude Code (`~/.claude/skills/ctf-pwn` or project `./.claude/skills/ctf-pwn`), and any other agent that loads SKILL.md skills. Reference files under `references/` are loaded on demand; read them when the topic matches.
 
-Use this skill for local or remote CTF pwn challenges. Work like a pwn player: reproduce the remote runtime, reverse the binary, wrap the protocol/menu, then prove the vulnerability with tmux-mcp driven GDB/pwndbg before committing to an exploit route. For live debugging, tmux-mcp is the primary tool path, not an optional convenience: keep GDB, normal shell, and inferior stdin/stdout in separate tmux panes, feed the inferior through its TTY, and inspect state after each meaningful step.
+Use this skill for local or remote CTF pwn challenges. Work like a pwn player: reproduce the remote runtime, reverse the binary, wrap the protocol/menu, then prove the vulnerability with a persistent GDB/pwndbg session before committing to an exploit route. For live debugging the primary path is a persistent GDB driven through plain `tmux` CLI from Bash (`tmux send-keys` to issue commands, `tmux capture-pane -p -S -` to read the full output), so you can step, inspect, and decide the next command adaptively — no MCP server required. Keep GDB, normal shell, and inferior stdin/stdout in separate tmux panes, feed the inferior through its TTY, and inspect state after each meaningful step. Use one-shot/batch GDB only to verify a known hypothesis.
 
 ## Mandatory References
 
 Read these reference files when the topic is relevant:
 
 - `references/ctf-workflow.md`: end-to-end solve order, state tracking, environment matching, reverse engineering, and debug loop.
-- `references/tmux-debugging.md`: mandatory tmux-mcp pane layout, GDB/inferior-tty setup, step debugging loop, and stdin redirection discipline.
+- `references/tmux-debugging.md`: tmux-CLI persistent-GDB pane layout (plus batch-GDB for verification), inferior-tty setup, step debugging loop, and stdin redirection discipline.
 - `references/exploit-templates.md`: pwntools skeletons, menu wrappers, GDB attach patterns, and state notes.
 - `references/technique-index.md`: stack, format string, shellcode, seccomp, IO_FILE, reverse/protocol, and special trick routing.
 - `references/glibc-heap-version-map.md`: heap exploitation choices by glibc version, allocator protection, primitive, and challenge limits. Read this first for any heap challenge.
@@ -22,14 +22,14 @@ Read these reference files when the topic is relevant:
 
 ## Core Rules
 
-- During dynamic analysis, use tmux-mcp first. Create or reuse `work`, `gdb`, and `inferior-tty` panes; run GDB in the GDB pane; set `inferior-tty` to the inferior pane TTY; send program input to the inferior pane; send debugger commands to the GDB pane with raw mode.
-- Do not replace first-pass debugging with a one-shot pwntools script, GDB heredoc, or static reasoning. Use scripts to reproduce states, but use tmux-mcp + GDB/pwndbg to observe registers, stack, heap chunks, bins, mappings, and crash sites step by step.
+- During dynamic analysis, drive a persistent GDB through a `tmux` CLI session first. Create or reuse `work`, `gdb`, and `inferior-tty` panes; run GDB in the GDB pane; set `inferior-tty` to the inferior pane TTY; send program input to the inferior pane with `tmux send-keys`; issue GDB commands to the GDB pane and read output with `tmux capture-pane -p -S -` (full scrollback).
+- Do not replace first-pass debugging with a one-shot pwntools script, GDB heredoc, or static reasoning. Use scripts to reproduce states, but drive a persistent GDB/pwndbg (tmux CLI) to observe registers, stack, heap chunks, bins, mappings, and crash sites step by step. Batch/one-shot GDB is for verifying a known hypothesis, not for exploring.
 - If a command or exploit crashes, returns EOF, desynchronizes prompts, or hits an allocator abort, stop and inspect the live tmux/GDB state before editing the exploit. Do not guess the next payload from source alone.
 - Do not jump straight to exploit writing. First record protections, libc/loader, I/O protocol, vulnerability site, primitive, and constraints.
 - Match the remote runtime before relying on offsets: use the provided `libc.so.6` and loader when present, or identify/download the matching libc if needed.
 - If the user provides an IDA path, IDB path, or IDA MCP connection, use IDA for first-pass reverse engineering before objdump-style static disassembly. `objdump` is only for quick sanity checks, symbol/protection inventory, or when IDA is unavailable. Use dynamic GDB verification for every important reverse-engineering assumption.
 - Build small pwntools wrappers for the challenge interface before exploitation. Heap/menu challenges should have `add`, `edit`, `show`, `delete/free`, and `choice` helpers when those actions exist.
-- Use `tmux-mcp` as the required interface for interactive debugging whenever live debugging is needed. Keep normal shell, GDB, and inferior stdin/stdout separate.
+- Use a persistent GDB driven via direct `tmux` CLI (`send-keys` / `capture-pane -p -S -`) as the interface for interactive debugging whenever live debugging is needed. Keep normal shell, GDB, and inferior stdin/stdout separate.
 - Do not drive GDB with large one-shot heredoc scripts when the inferior needs stdin. Prefer `set inferior-tty /dev/pts/N`; use `gdb.attach` only after the tmux/GDB state has already proved the primitive or when inferior-tty is impractical.
 - After a crash, EOF, wrong leak, allocator abort, unstable shell, or heap-layout-dependent failure, attach GDB or stop in tmux/GDB and inspect the exact memory state before changing the exploit. For heap challenges, build the next step from the current chunks, bins, pointer arrays, safe-linking values, and mapped target addresses observed in memory.
 - Choose exploitation techniques by evidence: glibc version, available leaks, write primitive, allocation/free limits, size restrictions, RELRO, PIE, NX, canary, seccomp, and whether hooks exist.
@@ -41,7 +41,7 @@ Read these reference files when the topic is relevant:
 2. Reproduce runtime with the supplied libc/loader or patch/run with the right environment.
 3. Reverse main paths, menu actions, data structures, and vulnerability site.
 4. Write minimal pwntools wrappers for the real interaction model.
-5. Use tmux-mcp + GDB + pwndbg + inferior-tty to validate the bug and measure offsets/state before relying on `exp.py`.
+5. Use a persistent GDB (tmux CLI) + pwndbg + inferior-tty to validate the bug and measure offsets/state before relying on `exp.py`.
 6. Classify the primitive: overflow, OOB, UAF, double free, off-by-one/null, format string, arbitrary read/write, shellcode, seccomp, protocol bug, etc.
 7. Select a route using `technique-index.md` and `glibc-heap-version-map.md`.
 8. Implement only the next tested step in `exp.py`: leak, base calculation, primitive strengthening, control-flow hijack, ORW, or shell.
@@ -133,46 +133,31 @@ Use IDA/idat/idalib when available. If the user gave an IDA path, IDB path, or I
 - For leak/write *offsets and bit math*, confirm against the disassembly, not just Hex-Rays. The decompiler often misrenders bitfield extraction — e.g. it printed `(ptr>>40)&0xff` (`WORD2(x)>>8`) where the actual instruction was `movzbl %al` = `ptr&0xff`. Misreading what a token/leak exposes (which bits, how wide) can send you down the wrong strategy for hours.
 - Verify decompiler assumptions in GDB at the relevant `read`, `malloc`, `free`, comparison, return, or syscall.
 
-## Tmux/GDB Setup
+## Live Debugging Setup (tmux CLI)
 
-This is the highest-priority debugging path. When proving a bug, measuring offsets, observing heap state, or debugging a failing exploit, actively call tmux-mcp tools instead of only describing commands. Use `create_session` or `find_session`, `create_window`, `execute_command`, and `capture_pane` to operate the panes.
-
-Create or reuse a tmux session with three roles:
-
-```text
-create_session(name="pwn")
-create_window(name="work")
-create_window(name="inferior-tty")
-create_window(name="gdb")
-```
-
-In `inferior-tty`, get the TTY path:
+Default interactive path: a **persistent GDB driven through plain `tmux` CLI from Bash** — issue
+a command with `tmux send-keys`, read the result with `tmux capture-pane -p -S -` (full
+scrollback, not just the visible screen), decide the next command, repeat. This lets you step
+and adapt like a human pwner, needs no MCP server, and survives long sessions; each step is one
+Bash call. Reserve one-shot/**batch GDB** (`gdb -batch -p PID -ex ...`, or `... -ex 'run < in'
+BIN`) for verifying a known target, not for exploration.
 
 ```bash
-cd /path/to/challenge-dir
-tty
+tmux new-session -d -s pwn -x 200 -y 50
+tmux set-option -t pwn history-limit 100000        # keep full scrollback
+# pane 0 = inferior TTY: run `tty` there, note the /dev/pts/N it prints
+# pane 1 = gdb:  gdb -q "$BIN"   then configure:
+#   set pagination off / confirm off / disassemble-next-line on / disable-randomization on
+#   set inferior-tty /dev/pts/N           # program I/O and GDB input never share stdin
+# per step (one Bash call): send, settle, read everything
+tmux send-keys -t pwn 'b *vuln+OFF' Enter; tmux send-keys -t pwn 'run' Enter; sleep .3
+tmux capture-pane -p -t pwn -S -
 ```
 
-In `gdb`:
-
-```bash
-cd /path/to/challenge-dir
-gdb -q "$BIN"
-```
-
-Configure GDB:
-
-```gdb
-set pagination off
-set confirm off
-set disassemble-next-line on
-set disable-randomization on
-set inferior-tty /dev/pts/N
-```
-
-Send program input to the inferior pane, not the GDB pane. Send GDB commands to the GDB pane with `rawMode=true`. Capture panes after important operations so the next decision is based on observed state, not assumptions.
-
-Read `references/tmux-debugging.md` before any substantial live debugging session.
+Send program input to the inferior pane, GDB commands to the GDB pane; wait for the prompt
+before `send-keys` (poll the pane, don't fixed-sleep). Full command templates, the step loop,
+the batch/gate alternative, and a stripped-libc `main_arena` note are in
+`references/tmux-debugging.md` — read it before any substantial live debugging session.
 
 ## Pwndbg Commands
 

@@ -1,6 +1,6 @@
 interface:
   display_name: "CTF Pwn"
-  short_description: "CTF pwn workflow with tmux-mcp-first GDB"
-  default_prompt: "Use $ctf-pwn to analyze this pwn challenge, match libc, reverse the bug, use tmux-mcp/GDB step debugging, and build a stable exploit."
+  short_description: "CTF pwn workflow with tmux-CLI-driven GDB"
+  default_prompt: "Use $ctf-pwn to analyze this pwn challenge, match libc, reverse the bug, use tmux-CLI/GDB step debugging, and build a stable exploit."
 policy:
   allow_implicit_invocation: true

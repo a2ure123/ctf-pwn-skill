@@ -1,6 +1,6 @@
-# tmux-mcp First Debugging
+# Live GDB Debugging (tmux CLI first, batch for verification)
 
-Use this file whenever the task requires live debugging, exploit crash analysis, heap/stack inspection, or validating a primitive. The model must operate tmux-mcp tools directly instead of only suggesting commands.
+Use this file whenever the task requires live debugging, exploit crash analysis, heap/stack inspection, or validating a primitive. The model must drive a real, persistent GDB session — not just suggest commands — by default through plain `tmux` CLI from Bash (`tmux send-keys` to issue commands, `tmux capture-pane -p -S -` to read output).
 
 ## Priority Rule
 
@@ -15,18 +15,15 @@ For pwn debugging, the default path is:
 
 Do not use a single heredoc-driven GDB session for interactive programs. Do not let GDB commands and inferior input share stdin. Do not make exploit changes after a crash until the crash site has been inspected in GDB.
 
-## Transport: persistent-interactive first, batch only for verification
+## Transport: a persistent tmux-CLI GDB session first, batch only for verification
 
 The valuable thing is a **persistent, adaptive GDB session** — set a breakpoint, look, decide
 the next command from what you just saw, step again. That's how you understand an unknown
 crash or watch the heap evolve. A one-shot script cannot do this; it can only confirm a
-hypothesis you already have. Pick the transport by reliability, not dogma:
+hypothesis you already have.
 
-1. **tmux-mcp** — fine while connected, but it can drop mid-session (it did, repeatedly, in
-   real solves). When it drops, do **not** retreat to one-shot scripts — switch to (2), which
-   keeps the interactive session.
-2. **direct `tmux` CLI from Bash** (reliable fallback, often the better default for a headless
-   agent): same persistent session, no MCP dependency, one Bash call per step.
+1. **Persistent GDB via direct `tmux` CLI from Bash** — the default. No MCP server, no extra
+   dependency; the session stays alive across the whole solve and each step is one Bash call.
    ```bash
    tmux new-session -d -s dbg -x 200 -y 50
    tmux set-option -t dbg history-limit 100000              # keep full scrollback
@@ -49,7 +46,7 @@ hypothesis you already have. Pick the transport by reliability, not dogma:
      tmux capture-pane -p -t dbg -S -
      ```
    - Never type NUL-containing binary into a pane; feed the inferior via pwntools or a file.
-3. **batch GDB — verification only, never exploration.** When you already know which addresses
+2. **batch GDB — verification only, never exploration.** When you already know which addresses
    to dump, or you're regression-checking a known state, one shot is fastest and survives any
    MCP/tmux issue:
    ```bash
@@ -64,34 +61,33 @@ hypothesis you already have. Pick the transport by reliability, not dogma:
    ```
    Batch cannot adapt mid-run or single-step — use it to confirm a hypothesis, not to form one.
 
-**Rule of thumb:** confused / forming a hypothesis / watching heap evolve → persistent session
-(tmux-mcp or direct tmux CLI). Verifying a known target / regression → batch. The flaky-MCP
-fallback is direct tmux CLI, **not** one-shot scripts (which throw away the ability to step).
+**Rule of thumb:** confused / forming a hypothesis / watching heap evolve → the persistent
+tmux-CLI session. Verifying a known target / regression → batch. Do not fall back to one-shot
+scripts for exploration — they throw away the ability to step.
+
+> An MCP-based tmux driver exists but is intentionally not used here — it dropped mid-session in
+> real solves. The direct `tmux` CLI above does the same job with no MCP server, and is the
+> default. (A reliable tmux MCP, if you have one, can drive the same panes, but it is never required.)
 
 **Stripped libc:** pwndbg `heap`/`bins` need `main_arena`; if it can't auto-locate it, set it
 yourself (`set $ma = <libc_base>+0x3ebc40` for 2.27) or read bins with raw
 `x/20gx <libc_base>+0x3ebc40` instead of waiting on auto-detection.
 
-## Tool Use Pattern
+## GDB session config
 
-Use tmux-mcp in this order:
+Three panes: `work` (shell), `gdb`, `inferior-tty`. In the inferior pane run `tty` and note the
+`/dev/pts/N`. In the gdb pane start `gdb -q "$BIN"` and configure once:
 
-```text
-find_session(name="pwn") or create_session(name="pwn")
-create_window(name="work")
-create_window(name="inferior-tty")
-create_window(name="gdb")
-execute_command(paneId=..., command="cd /path/to/challenge-dir && tty")
-capture_pane(paneId=...)
-execute_command(paneId=..., command="cd /path/to/challenge-dir && gdb -q ./<target-elf>", rawMode=true)
-execute_command(paneId=..., command="set pagination off", rawMode=true)
-execute_command(paneId=..., command="set confirm off", rawMode=true)
-execute_command(paneId=..., command="set disassemble-next-line on", rawMode=true)
-execute_command(paneId=..., command="set disable-randomization on", rawMode=true)
-execute_command(paneId=..., command="set inferior-tty /dev/pts/N", rawMode=true)
+```gdb
+set pagination off
+set confirm off
+set disassemble-next-line on
+set disable-randomization on
+set inferior-tty /dev/pts/N      # so program I/O and GDB input never share stdin
 ```
 
-Use `capture_pane` frequently: after startup, after each breakpoint hit, after input, after `heap/bins/context`, and after crashes.
+Re-read the gdb pane with `tmux capture-pane -p -S -` after startup, after each breakpoint hit,
+after input, after `heap/bins/context`, and after every crash.
 
 ## Inferior TTY Workflow
 
@@ -210,4 +206,4 @@ Use `gdb.attach` after the tmux/inferior-tty workflow has already established:
 - the interaction wrappers,
 - at least one observed memory/register state.
 
-For first-pass analysis and confusing crashes, return to tmux-mcp with explicit `set inferior-tty`.
+For first-pass analysis and confusing crashes, return to the persistent tmux-CLI GDB session with explicit `set inferior-tty`.

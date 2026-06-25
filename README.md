@@ -6,7 +6,7 @@ A CTF pwn solving skill for agent CLIs (Codex, Claude Code, and other SKILL.md-c
 2. reproduce the remote libc/loader environment,
 3. reverse with IDA/idat/idalib,
 4. write stable pwntools wrappers,
-5. debug step by step with tmux-mcp, GDB, inferior-tty, and pwndbg,
+5. debug step by step with a persistent GDB (tmux CLI), inferior-tty, and pwndbg,
 6. choose exploitation routes by primitive, glibc version, and challenge limits,
 7. iterate until the local exploit is stable and then adapt remote.
 
@@ -81,6 +81,6 @@ The validator checks the skill frontmatter, required references, templates, and 
 
 ## Design Notes
 
-`SKILL.md` stays focused on the mandatory workflow. The tmux-mcp debugging path is intentionally first-class. Larger technique details live in `references/` so the agent loads only the relevant material: heap version map, House-of technique catalog, technique index, CTF workflow, and exploit templates.
+`SKILL.md` stays focused on the mandatory workflow. The tmux-CLI persistent-GDB debugging path is intentionally first-class. Larger technique details live in `references/` so the agent loads only the relevant material: heap version map, House-of technique catalog, technique index, CTF workflow, and exploit templates.
 
 Heap challenges are version-gated on purpose: `SKILL.md` forces the agent to fingerprint the glibc version first, then `references/glibc-heap-version-map.md` maps that version to its live mitigations and `references/house-of-techniques.md` lists which House-of / FSOP routes are still viable. The catalog is kept current through glibc 2.43 (Jan 2026) and flags the proposed fastbin removal that is still under review.
