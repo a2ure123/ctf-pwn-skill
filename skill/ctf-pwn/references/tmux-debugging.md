@@ -15,6 +15,63 @@ For pwn debugging, the default path is:
 
 Do not use a single heredoc-driven GDB session for interactive programs. Do not let GDB commands and inferior input share stdin. Do not make exploit changes after a crash until the crash site has been inspected in GDB.
 
+## Transport: persistent-interactive first, batch only for verification
+
+The valuable thing is a **persistent, adaptive GDB session** — set a breakpoint, look, decide
+the next command from what you just saw, step again. That's how you understand an unknown
+crash or watch the heap evolve. A one-shot script cannot do this; it can only confirm a
+hypothesis you already have. Pick the transport by reliability, not dogma:
+
+1. **tmux-mcp** — fine while connected, but it can drop mid-session (it did, repeatedly, in
+   real solves). When it drops, do **not** retreat to one-shot scripts — switch to (2), which
+   keeps the interactive session.
+2. **direct `tmux` CLI from Bash** (reliable fallback, often the better default for a headless
+   agent): same persistent session, no MCP dependency, one Bash call per step.
+   ```bash
+   tmux new-session -d -s dbg -x 200 -y 50
+   tmux set-option -t dbg history-limit 100000              # keep full scrollback
+   tmux send-keys -t dbg 'gdb -q -p PID' Enter ; sleep 1.2  # WAIT for the prompt first
+   # each step = one Bash call: send, settle, read
+   tmux send-keys -t dbg 'b *0xADDR' Enter; tmux send-keys -t dbg 'c' Enter; sleep .3
+   tmux capture-pane -p -t dbg -S -          # -S - = the ENTIRE history, not just the screen
+   tmux send-keys -t dbg 'ni' Enter; sleep .2; tmux capture-pane -p -t dbg -S -200
+   ```
+   - `capture-pane -p -S -` returns the **whole scrollback** (verified: 500/500 lines, vs ~55
+     for the default visible-screen capture). Use `-S -N` to bound to the last N lines. Always
+     use `-S` for long `bins` / `vis_heap_chunks` / backtrace output — the default truncates.
+   - **Always wait for the prompt before `send-keys`** (a fresh shell/gdb needs ~1s to init);
+     otherwise keys are typed before the target is ready and the step silently does nothing.
+     Prefer polling the pane over a fixed `sleep` — it is faster and never races:
+     ```bash
+     until tmux capture-pane -p -t dbg | grep -q 'pwndbg>'; do sleep .1; done   # wait for prompt
+     tmux send-keys -t dbg 'x/8gx $rsp' Enter
+     until tmux capture-pane -p -t dbg | tail -1 | grep -q 'pwndbg>'; do sleep .1; done  # cmd done
+     tmux capture-pane -p -t dbg -S -
+     ```
+   - Never type NUL-containing binary into a pane; feed the inferior via pwntools or a file.
+3. **batch GDB — verification only, never exploration.** When you already know which addresses
+   to dump, or you're regression-checking a known state, one shot is fastest and survives any
+   MCP/tmux issue:
+   ```bash
+   # gate: the exploit pauses, writes its pid, spins on a file
+   #   open('pid','w').write(str(io.pid)); open('gate','w').close()
+   #   while os.path.exists('gate'): time.sleep(0.3)
+   gdb -q -batch -p $(cat pid) -ex 'x/4gx <unsorted>' -ex 'x/8gx <chunk>' -ex 'vmmap libc'; rm gate
+   # fully non-interactive when input is deterministic:
+   gdb -q -batch -ex 'b *0xADDR' -ex 'run < in' -ex 'bins' -ex 'x/16gx $rsp' ./BIN
+   # whole trace in one run via auto-dumping breakpoints:
+   #   b *0xADDR \ commands \ silent \ bins \ x/8gx PTR \ continue \ end
+   ```
+   Batch cannot adapt mid-run or single-step — use it to confirm a hypothesis, not to form one.
+
+**Rule of thumb:** confused / forming a hypothesis / watching heap evolve → persistent session
+(tmux-mcp or direct tmux CLI). Verifying a known target / regression → batch. The flaky-MCP
+fallback is direct tmux CLI, **not** one-shot scripts (which throw away the ability to step).
+
+**Stripped libc:** pwndbg `heap`/`bins` need `main_arena`; if it can't auto-locate it, set it
+yourself (`set $ma = <libc_base>+0x3ebc40` for 2.27) or read bins with raw
+`x/20gx <libc_base>+0x3ebc40` instead of waiting on auto-detection.
+
 ## Tool Use Pattern
 
 Use tmux-mcp in this order:

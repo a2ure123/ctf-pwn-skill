@@ -149,8 +149,13 @@ Signals:
 
 Routes (full details and per-version viability in `references/house-of-techniques.md`):
 
-- stdout leak by corrupting `_IO_2_1_stdout_` fields (set `_flags=0xfbad1800`, write_ptr LSB).
-- stdin arbitrary write in special cases.
+- **data-only FILE arbitrary read/write (no vtable, all glibc — go-to leak/write on 2.34+)**:
+  - stdout arbitrary read: `_IO_2_1_stdout_._flags=0xfbad1800`, `_IO_read_end=_IO_write_base`,
+    `_IO_write_base=addr`, `_IO_write_ptr=_IO_write_end=addr+len` -> next flush leaks `[addr,+len)`.
+    1-byte form: only `_flags=0xfbad1800` + partial-overwrite `_IO_write_base` LSB -> libc leak.
+  - stdin arbitrary write: `_IO_2_1_stdin_._flags=0xfbad0000`, `_IO_read_base=_IO_read_ptr=
+    _IO_read_end=addr`, `_IO_buf_base=addr`, `_IO_buf_end=addr+len` -> next scanf/fread refill
+    does `read(0, addr, len)`. Full recipe + offsets in `house-of-techniques.md`.
 - House of Orange on older libc with `_IO_list_all`; House of Tangerine is the modern successor.
 - House of Apple 2 is the default 2.35+ FSOP RIP hijack; House of Cat for clean RDX ->
   setcontext/ORW; plus Kiwi/Husk/Banana/Emma/Obstack/Pig depending on version and trigger.

