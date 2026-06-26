@@ -18,8 +18,10 @@ how to drive it and current caveats.
   - leaked heap + UAF/edit: tcache poisoning (not a "house", but first choice 2.26+).
   - leakless / partial overwrite: House of Roman, House of Rust, **House of Water**.
   - via fastbin->tcache stash: fastbin-reverse-into-tcache (needs fastbins to exist).
-- Need to **write a heap/libc pointer to a chosen address**: **largebin attack** (2.30+
-  ordering-safe single write) -> then House of Banana / FSOP / `mp_.tcache_bins`.
+- Need to **write a heap/libc pointer to a chosen address**: **largebin insertion write**
+  can sometimes do this, but on 2.30+ it is not a default primitive. The exact
+  size ordering, nextsize-chain checks, and target shape must be proved in GDB before
+  building House of Banana / FSOP / `mp_` routes from it.
 - Need **code execution on 2.34+ (hooks gone)**: FSOP — **House of Apple 2** (default),
   **House of Cat** (clean RDX for setcontext/ORW), House of Emma, House of Obstack,
   House of Pig; or **House of Banana** (hijack `_rtld_global` at exit); or House of Kiwi
@@ -142,8 +144,10 @@ the `_IO_file_overflow` / `_IO_file_underflow` path is actually reached in GDB.
   write that reaches only `user+8..+0x20` (`bk|fd_nextsize|bk_nextsize`) — see the heap
   edit-primitive routing in `technique-index.md`.
 - **Idea**: combine unsorted-bin attack + largebin attack to allocate a chunk at `target`.
-- **Trigger**: call **`calloc`** (not `malloc`) for the placement — `calloc` skips tcache so
-  the allocator is forced to scan the unsorted bin and run the malicious insert/return.
+- **Trigger**: historically this used **`calloc`** because older glibc skipped tcache.
+  This is **not true on glibc 2.42+**: `calloc` first checks small and large tcache
+  (`tcache_get` / `tcache_get_large`) when `nb < mp_.tcache_max_bytes`. Verify the
+  allocation path in GDB before using `calloc` as an unsorted/largebin trigger.
 - **Fake size**: the vended chunk's size field overlaps a written pointer's bytes (the
   classic `bk_nextsize = fake - 0x18 - 5` trick makes the size = the heap **high byte**). You
   usually cannot leak that byte, so the placement is **probabilistic** (size must fall in the
@@ -153,7 +157,9 @@ the `_IO_file_overflow` / `_IO_file_underflow` path is actually reached in GDB.
   (`fake = __free_hook - 0x18` → user = `__free_hook - 8`), engrave `one_gadget` into
   `__free_hook`, then any `free()` → shell. Leak (one-time `%s`) is only the libc source;
   the trigger is `free()`, so there is no leak/trigger conflict.
-- **Dead at 2.30**: largebin insertion ordering checks. Use a plain largebin attack instead.
+- **Dead at 2.30**: largebin insertion ordering checks kill the classic Storm placement.
+  A later single-write largebin insertion primitive may exist, but it is highly
+  version- and layout-dependent; do not assume it works without a live write proof.
 
 ### House of Rabbit
 - **Versions**: 2.23 — **~2.28**.
@@ -369,13 +375,15 @@ arbitrary write (or a largebin/unsorted write into a FILE).
 
 ## Largebin / mp_ targets (where the houses point on 2.34+)
 
-- First verify that the target libc actually gives a largebin write: on 2.30+ the
-  nextsize-chain checks and exact size ordering decide whether the write happens at all.
-  On 2.42+ also verify the candidate chunk is not captured by large tcache.
-- **`mp_.tcache_bins`**: largebin-attack it to a huge value so large frees index far past
-  `tcache_perthread_struct` into controllable heap data -> forge tcache entries ->
-  unrestricted arbitrary allocation. (`mp_.tcache_bins` plays the role `global_max_fast`
-  plays for fastbins.)
+- First verify that the target libc actually gives a largebin insertion write: on 2.30+
+  the nextsize-chain checks and exact size ordering decide whether the write happens at
+  all. On 2.42+, large tcache exists and `calloc` also checks tcache, so confirm both
+  the free destination and the subsequent allocation path before planning around
+  unsorted/largebin behavior.
+- **`mp_` / tcache metadata targets**: older notes often target `mp_.tcache_bins` or
+  related fields, but 2.42+ large-tcache internals changed the exact knobs and access
+  paths. Resolve the concrete `mp_` field and prove the resulting tcache index behavior
+  in GDB before treating this as unrestricted arbitrary allocation.
 - **`global_max_fast`**: largebin/unsorted-attack it so big chunks act as fastbins (House of
   Corrosion).
 - **`_IO_list_all` / `stderr` / `_IO_2_1_stdout_`**: largebin/unsorted attack to plant a
