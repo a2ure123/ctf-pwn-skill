@@ -109,13 +109,14 @@ decides which metadata you can forge, and it constrains you more than the glibc 
 | Your write reaches | You can forge | Route to |
 |---|---|---|
 | `user+0` (fd / tcache-next / fastbin fd) | freelist `fd` | tcache poisoning, fastbin dup, fd-based unsorted/largebin |
-| ONLY `user+8..` (`bk`, `fd_nextsize`, `bk_nextsize`) — never `user+0` | `bk` + nextsize | **bk-based only**: unsorted-bin attack, largebin attack, **House of Storm** |
+| ONLY `user+8..` (`bk`, `fd_nextsize`, `bk_nextsize`) — never `user+0` | `bk` + nextsize | **bk-based only**: unsorted-bin attack; largebin only if the 2.30+ insertion checks and size ordering are satisfiable |
 | full chunk contents (big overflow/edit) | everything | overlap, fake FILE/FSOP, anything |
 
 Key consequence: **if the edit cannot touch `user+0`, tcache/fastbin fd-poison is impossible.**
-A 0x18-byte write at `user+8` that hits exactly `bk | fd_nextsize | bk_nextsize` is the
-signature of an *intended* **largebin attack / House of Storm** — the author shaped the
-primitive that way. (catchme: `read(0, user+8, 0x18)` + `calloc` otter => House of Storm.)
+A 0x18-byte write at `user+8` that hits exactly `bk | fd_nextsize | bk_nextsize` used to be
+a strong hint for **largebin / House of Storm**, but on glibc 2.30+ it is only a candidate:
+the allocator validates nextsize back-links and the write happens only on the right
+different-size insertion path. Prove the write in GDB before building the exploit around it.
 
 Match the technique to an available **post-leak trigger** — as important as the write itself:
 

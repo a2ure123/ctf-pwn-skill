@@ -253,15 +253,17 @@ arbitrary write (or a largebin/unsorted write into a FILE).
   `_mode>0`, `B->overflow (B+0x18) = C`). Pick the one whose call site the program reaches.
 
 ### House of Cat
-- **Versions**: 2.35+ (also reported on 2.32).
-- **Needs**: two largebin attacks (one on `stderr`/the FILE, one to forge top size), libc+heap
-  leak, and an `__malloc_assert`/IO trigger.
+- **Versions**: 2.35+ (also reported on 2.32), but the usual largebin-assisted setup is
+  fragile on 2.30+ and must be confirmed against the target libc.
+- **Needs**: usually two proven writes (often largebin-derived: one on `stderr`/the FILE,
+  one to forge top size), libc+heap leak, and an assert/IO trigger.
 - **Idea**: an Apple-2 cousin that routes through `_IO_wfile_seekoff` ->
   `_IO_switch_to_wget_mode`, which leaves **RDX pointing at your controlled FILE** — perfect
   for `setcontext` (2.29+ reads the ucontext from RDX) -> one clean ORW frame. This is why
   Cat is favored for seccomp/ORW on modern libc.
-- **Steps**: leak libc+heap; largebin-attack `stderr`; largebin-attack the top size; forge
-  the fake `_IO_FILE`; trigger `__malloc_assert` -> `_IO_wfile_seekoff` -> setcontext -> ORW.
+- **Steps**: leak libc+heap; prove the write primitive in GDB; write `stderr`/the FILE and
+  top-size/control fields; forge the fake `_IO_FILE`; trigger the version-correct
+  assert/IO path -> `_IO_wfile_seekoff` -> setcontext -> ORW.
 
 ### House of Emma
 - **Versions**: 2.35+.
@@ -367,6 +369,9 @@ arbitrary write (or a largebin/unsorted write into a FILE).
 
 ## Largebin / mp_ targets (where the houses point on 2.34+)
 
+- First verify that the target libc actually gives a largebin write: on 2.30+ the
+  nextsize-chain checks and exact size ordering decide whether the write happens at all.
+  On 2.42+ also verify the candidate chunk is not captured by large tcache.
 - **`mp_.tcache_bins`**: largebin-attack it to a huge value so large frees index far past
   `tcache_perthread_struct` into controllable heap data -> forge tcache entries ->
   unrestricted arbitrary allocation. (`mp_.tcache_bins` plays the role `global_max_fast`

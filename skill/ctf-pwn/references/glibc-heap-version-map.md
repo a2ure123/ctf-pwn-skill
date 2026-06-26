@@ -95,8 +95,13 @@ Confirm every check in GDB; this is the routing prior, not ground truth for a gi
 ### glibc 2.30 (Aug 2019) — largebin checks
 
 - **largebin insertion ordering checks** (`fd_nextsize`/`bk_nextsize`) -> **House of
-  Storm dead**; classic largebin attack is constrained but a refined single-write
-  largebin attack (write a heap ptr to `target`) still works and is a core modern primitive.
+  Storm dead**. Do not treat "largebin attack" as a generic arbitrary write on 2.30+:
+  the nextsize path validates both the size ordering and the opposite link
+  (`fwd->bk_nextsize->fd_nextsize == fwd` or `fwd->fd->bk_nextsize->fd_nextsize == fwd->fd`).
+  A single-write largebin primitive can still exist, but only for the exact insertion path,
+  chunk-size relation, and writable target shape observed in GDB. If the second chunk has
+  the same size or lands in the wrong side of the skip-list insertion, the expected
+  `target = victim` write will not happen.
 - `tcache->counts` widened to `uint16_t`.
 
 ### glibc 2.31 (Feb 2020) — common modern target, hooks still alive
@@ -153,13 +158,13 @@ Confirm every check in GDB; this is the routing prior, not ground truth for a gi
 
 ### glibc 2.42 (Aug 2025) — large-block tcache (IMPORTANT)
 
-- **tcache can now cache large blocks, up to 4 MB**, controlled by the new tunable
-  `glibc.malloc.tcache_max` (and tcache is faster for small sizes).
-- Default `tcache_max` is unchanged (~0x410), so by default the classic
-  "alloc 0x420+ -> unsorted bin -> libc leak" trick still works. **But if the challenge
-  or distro raised `glibc.malloc.tcache_max`, large frees go to tcache instead of the
-  unsorted bin**, breaking large-chunk libc leaks and largebin attacks. Check
-  `mp_.tcache_max_bytes` / the tunable in GDB before assuming a free reaches unsorted.
+- **tcache has separate small and large classes**: `TCACHE_SMALL_BINS=64` plus
+  `TCACHE_LARGE_BINS=12` (up to about 4 MB), with large tcache indexed logarithmically.
+- The default threshold is near the old small-tcache maximum (`MAX_TCACHE_SMALL_SIZE + 1`),
+  but the tunable `glibc.malloc.tcache_max` can raise it. If it is raised, large frees may
+  be captured by tcache before they ever become an unsorted/largebin leak or largebin-write
+  candidate. Check `mp_.tcache_max_bytes`, `mp_.tcache_small_bins`, and the actual bin after
+  `free` in GDB before assuming a 0x420+ chunk reaches unsorted.
 
 ### glibc 2.43 (Jan 2026)
 
@@ -167,16 +172,17 @@ Confirm every check in GDB; this is the routing prior, not ground truth for a gi
   (mappings can be sealed against mprotect/munmap/remap — relevant if a target seals
   pages you wanted to ret2mprotect); `openat2`. No fastbin removal.
 
-### Future / under review — fastbin removal (NOT merged as of 2.43)
+### Future / bleeding-edge master — fastbin removal
 
-- An Oct 2025 patch series ("malloc: Remove fastbins") proposes removing fastbins
-  entirely, removing `malloc_consolidate` and the `have_fastchunks` flag, and setting the
-  default `TCACHE_FILL_COUNT` to 16. **It is not in any released glibc as of 2.43
-  (Jan 2026); earliest landing would be a future release (2.44+).**
+- The Oct 2025 "malloc: Remove fastbins" work has appeared on glibc master after the
+  release branches tracked above: `malloc.c` no longer contains fastbin paths or
+  `global_max_fast`, Safe-Linking text only mentions tcache, and `TCACHE_FILL_COUNT` is 16.
+  Treat this as bleeding-edge/future-release behavior unless the provided libc proves it.
 - When it lands, every fastbin-based route dies: fastbin attack, fastbin dup, House of
   Rabbit, fastbin-reverse-into-tcache, malloc_consolidate-overlap tricks. Everything
-  routes through tcache. **Always confirm the fastbins array actually exists in GDB
-  (`bins` / `p main_arena.fastbinsY`) before planning a fastbin route on a bleeding-edge libc.**
+  routes through tcache and normal bins. **Always confirm the fastbins array actually exists
+  in GDB (`bins` / `p main_arena.fastbinsY`) before planning a fastbin route on a
+  bleeding-edge libc.**
 
 ## Primitive to Route
 
@@ -220,8 +226,11 @@ Cross off whatever the resolved version killed.
 
 ### Largebin Write
 
-- Writes a heap (or chosen) pointer to a target address; core modern primitive.
-- 2.30+ ordering checks: the single-write form still works; House of Storm is dead.
+- Potentially writes a heap chunk pointer through the largebin nextsize insertion path, but
+  it is not a default arbitrary write on modern glibc.
+- 2.30+ ordering checks: House of Storm is dead; a single-write form is version- and
+  layout-dependent. Confirm the exact write in GDB at the largebin insertion site before
+  choosing FILE/rtld/mp_ targets.
 - Follow-ups: `_IO_list_all`, `stderr`/FILE, `mp_.tcache_bins`, `global_max_fast`,
   `_rtld_global`, tcache metadata. See house-of-techniques.md.
 
