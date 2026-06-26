@@ -42,6 +42,37 @@ p &__libc_csu_init      # gone 2.34+
 If only the binary is given, the libc is the remote's; identify it (libc-database /
 blukat / patchelf with glibc-all-in-one) before trusting any offset.
 
+## Allocator Source Audit
+
+After fingerprinting a heap challenge's libc, inspect the matching release's `NEWS` and
+`malloc/malloc.c` before choosing a route. Do this especially for glibc 2.26+ where
+tcache details change exploitability. Prefer the bundled libc source if available; otherwise
+use the official GNU release tarballs or distro source package. Record the answers in the
+solve state.
+
+Minimum checks:
+
+```bash
+# Replace 2.43 with the exact version, or use the distro source package.
+curl -L https://ftp.gnu.org/gnu/glibc/glibc-2.43.tar.xz -o /tmp/glibc-2.43.tar.xz
+tar -xOf /tmp/glibc-2.43.tar.xz glibc-2.43/NEWS | rg -n -C 3 'tcache|malloc|fastbin|large blocks'
+tar -xOf /tmp/glibc-2.43.tar.xz glibc-2.43/malloc/malloc.c | rg -n \
+  'TCACHE_|tcache_get|tcache_put|tcache_location_large|large_csize2tidx|__libc_calloc|global_max_fast|fastbin'
+```
+
+Questions to answer before selecting a technique:
+
+- tcache shape: how many bins, whether small and large tcache are separate, and whether the
+  per-bin field is a used `counts[]` counter or a remaining-capacity `num_slots[]` counter.
+- tcache list order: small tcache is still head/LIFO, but large tcache may be size-sorted and
+  allocations can remove from the middle rather than simply popping `entries[idx]`.
+- allocation front-ends: verify whether `malloc`, `calloc`, `realloc`, and aligned allocation
+  consult tcache before arena bins. Do not assume `calloc` skips tcache on modern glibc.
+- size matching: for large tcache, check whether `tcache_get_large` accepts the first chunk
+  whose size is >= the request or requires an exact chunk size for that release.
+- tunables and defaults: `mp_.tcache_max_bytes`, `mp_.tcache_count`, `TCACHE_FILL_COUNT`, and
+  any distro patches can decide whether a chunk reaches unsorted/largebin at all.
+
 ## Version Timeline (mechanisms, what dies, what to use)
 
 Confirm every check in GDB; this is the routing prior, not ground truth for a given build.
@@ -155,29 +186,51 @@ Confirm every check in GDB; this is the routing prior, not ground truth for a gi
 - **Dumped-heap support removed**: `malloc_set_state()` always returns -1. No exploitation
   impact. **Fastbins are NOT removed in 2.41** — a common myth; verify in GDB, the
   fastbins array still exists.
+- tcache is still the older layout: `TCACHE_MAX_BINS=64`, default `TCACHE_FILL_COUNT=7`,
+  `tcache_perthread_struct` has `uint16_t counts[64]` plus `entries[64]`, and small tcache
+  allocation pops the bin head. `calloc` may already consult tcache through
+  `tcache_try_malloc`; verify the exact `__libc_calloc` path instead of assuming it skips
+  tcache.
 
 ### glibc 2.42 (Aug 2025) — large-block tcache (IMPORTANT)
 
-- **tcache has separate small and large classes**: `TCACHE_SMALL_BINS=64` plus
-  `TCACHE_LARGE_BINS=12` (up to about 4 MB), with large tcache indexed logarithmically.
-- The default threshold is near the old small-tcache maximum (`MAX_TCACHE_SMALL_SIZE + 1`),
-  but the tunable `glibc.malloc.tcache_max` can raise it. If it is raised, large frees may
-  be captured by tcache before they ever become an unsorted/largebin leak or largebin-write
-  candidate. Check `mp_.tcache_max_bytes`, `mp_.tcache_small_bins`, and the actual bin after
-  `free` in GDB before assuming a 0x420+ chunk reaches unsorted.
+- Official NEWS: malloc's thread-local cache can cache **large blocks**; the
+  `glibc.malloc.tcache_max` tunable can raise the maximum to `4194304`.
+- tcache structure changed from one 64-bin array to small+large classes:
+  `TCACHE_SMALL_BINS=64`, `TCACHE_LARGE_BINS=12`, `TCACHE_MAX_BINS=76`. The per-bin field is
+  now `num_slots[TCACHE_MAX_BINS]`, a remaining-capacity counter: `tcache_put_n` decrements
+  it and `tcache_get_n` increments it. Do not treat it like old `counts[]`.
+- Large tcache is **not a simple head/LIFO bin**. `large_csize2tidx(nb)` maps sizes
+  logarithmically, `tcache_put_large` inserts via `tcache_location_large`, and
+  `tcache_get_large` may remove an entry from the middle of the linked list. Any tcache
+  poisoning or "bin head" assumption must account for this.
+- `__libc_calloc` checks tcache first. It computes `nb`, tests `nb < mp_.tcache_max_bytes`,
+  then tries small `tcache_get` or large `tcache_get_large` before falling back to
+  `__libc_calloc2`. Old notes that say `calloc` skips tcache are wrong for 2.42+.
+- In upstream 2.42, `tcache_get_large` returns the first large-tcache chunk whose size is
+  at least the request (`chunksize >= nb`). This can make large-tcache reuse less exact than
+  normal bin matching; verify the live list order in GDB.
 
 ### glibc 2.43 (Jan 2026)
 
 - C23 `free_sized` / `free_aligned_sized` / `memset_explicit` / `memalignment`; `mseal`
   (mappings can be sealed against mprotect/munmap/remap — relevant if a target seals
-  pages you wanted to ret2mprotect); `openat2`. No fastbin removal.
+  pages you wanted to ret2mprotect); `openat2`. No fastbin removal in the release branch.
+- tcache keeps the 2.42 small+large design (`64+12` bins, `num_slots[]`, size-sorted large
+  lists), but upstream 2.43 changes important details: default `TCACHE_FILL_COUNT=16`, and
+  `tcache_get_large` requires an **exact** chunk size (`nb == chunksize(mem2chunk(te))`)
+  instead of accepting the first larger chunk. This changes large-tcache overlap and
+  poisoning reliability.
+- `__libc_calloc` still checks small and large tcache before arena bins. For any
+  unsorted/largebin plan, prove that the relevant free bypasses tcache and that the next
+  allocation path does not return from tcache first.
 
 ### Future / bleeding-edge master — fastbin removal
 
 - The Oct 2025 "malloc: Remove fastbins" work has appeared on glibc master after the
   release branches tracked above: `malloc.c` no longer contains fastbin paths or
-  `global_max_fast`, Safe-Linking text only mentions tcache, and `TCACHE_FILL_COUNT` is 16.
-  Treat this as bleeding-edge/future-release behavior unless the provided libc proves it.
+  `global_max_fast`, and Safe-Linking text only mentions tcache. Treat this as
+  bleeding-edge/future-release behavior unless the provided libc proves it.
 - When it lands, every fastbin-based route dies: fastbin attack, fastbin dup, House of
   Rabbit, fastbin-reverse-into-tcache, malloc_consolidate-overlap tricks. Everything
   routes through tcache and normal bins. **Always confirm the fastbins array actually exists
@@ -193,8 +246,9 @@ Cross off whatever the resolved version killed.
 - Leak heap from a freed tcache/fastbin `fd` (mandatory groundwork on 2.32+ for safe-linking).
 - Leak libc from a chunk that entered the unsorted bin (size 0x90..0x3f0 by default; on
   2.42 with raised `tcache_max`, force unsorted differently).
-- Then: tcache poisoning, fastbin attack (if fastbins exist), largebin attack, FILE/FSOP,
-  hook overwrite if <= 2.33, or stack-return via `__environ`.
+- Then: tcache poisoning, fastbin attack (if fastbins exist), FILE/FSOP, stack-return via
+  `__environ`, or a proven largebin insertion write. On 2.42+, model small/large tcache
+  separately before assuming a chunk reaches unsorted/largebin.
 
 ### UAF with Edit
 
@@ -231,8 +285,10 @@ Cross off whatever the resolved version killed.
 - 2.30+ ordering checks: House of Storm is dead; a single-write form is version- and
   layout-dependent. Confirm the exact write in GDB at the largebin insertion site before
   choosing FILE/rtld/mp_ targets.
-- Follow-ups: `_IO_list_all`, `stderr`/FILE, `mp_.tcache_bins`, `global_max_fast`,
-  `_rtld_global`, tcache metadata. See house-of-techniques.md.
+- On 2.42+, also prove the candidate chunks are not intercepted by large tcache and that
+  `calloc`/`malloc` did not satisfy the request from tcache before largebin insertion.
+- Follow-ups: `_IO_list_all`, `stderr`/FILE, version-specific `mp_` or tcache metadata,
+  `_rtld_global`, and FILE/FSOP. See house-of-techniques.md.
 
 ### Arbitrary Write — target by version
 

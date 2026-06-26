@@ -103,7 +103,11 @@ challenge, work in this order and record each result in the solve-state file.
    `strings libc.so.6 | grep 'GLIBC_2\.'`, `gnu_get_libc_version`, and symbol presence in
    GDB (`p &__free_hook`, `p &__libc_csu_init`, `p &_IO_wfile_jumps`).
 2. **Enumerate the live mitigations for that version** using
-   `references/glibc-heap-version-map.md`. Key inflection points to settle explicitly:
+   `references/glibc-heap-version-map.md`. Before picking a heap route, do the allocator
+   source audit from that file: check the matching release's `NEWS` and `malloc.c` for
+   tcache bin counts, `counts[]` vs `num_slots[]`, large-tcache ordering, `calloc` tcache
+   use, `TCACHE_FILL_COUNT`, and fastbin/global_max_fast presence. Key inflection points
+   to settle explicitly:
    - tcache introduced at **2.26**; tcache double-free **key at 2.29** (not 2.32).
    - top-chunk size check at **2.29** (House of Force dead).
    - largebin ordering checks at **2.30** (House of Storm dead).
@@ -113,10 +117,13 @@ challenge, work in this order and record each result in the solve-state file.
      exit handlers / `_rtld_global` / setcontext.
    - IO vtable check since **2.24**; House of Apple 2 / Cat bypass it via the unchecked
      **wide vtable** (`_IO_wfile_jumps`), still working on the latest libc.
-   - **2.42** lets tcache cache large blocks (tunable `glibc.malloc.tcache_max`, up to 4 MB):
-     if raised, large frees no longer fall into the unsorted bin — verify before leaking.
-   - **Fastbins are NOT removed as of 2.43 (Jan 2026)**; removal is a proposed Oct 2025
-     patch series for a future release. On bleeding-edge libc, confirm fastbins exist in GDB.
+   - **2.42** redesigns tcache for large blocks: 64 small bins + 12 large bins,
+     logarithmic large indexes, `num_slots[]` instead of old `counts[]`, and large-tcache
+     insert/get can walk the list rather than only using the head. `calloc` checks tcache.
+   - **2.43** keeps large tcache but changes details: upstream default `TCACHE_FILL_COUNT=16`
+     and large-tcache get requires an exact chunk size. Verify distro patches.
+   - **Fastbins are NOT removed as of the 2.43 release branch**; removal appears only on
+     bleeding-edge/future master work. Confirm fastbins/global_max_fast in GDB or source.
 3. **Classify the primitive and constraints** (UAF/overflow/off-by-null/double-free; show?
    edit count? free count? size class limits? seccomp?).
 4. **Pick a route** by crossing off whatever the version killed. For any House-of, FILE/FSOP,
